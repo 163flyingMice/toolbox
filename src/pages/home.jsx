@@ -186,7 +186,7 @@ export default function Home(props) {
               <div className="w-6 h-6 bg-dev-green/20 rounded flex items-center justify-center">
                 <span className="text-dev-green font-mono font-bold text-[10px]">&lt;/&gt;</span>
               </div>
-              <span className="text-sm font-heading text-dev-muted">程序员工具箱</span>
+              <span className="text-sm font-heading text-dev-muted">DevToolkit</span>
             </div>
             <span className="text-xs font-mono text-dev-muted/50">所有工具均在浏览器本地运行。</span>
           </div>
