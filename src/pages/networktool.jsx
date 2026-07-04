@@ -197,10 +197,37 @@ function IpWhoisTool() {
     setResult(null);
     try {
       if (mode === 'ip') {
-        const res = await fetch('https://ipapi.co/' + query.trim() + '/json/');
-        const data = await res.json();
-        if (data.error) throw new Error(data.reason || '查询失败');
-        setResult({ type: 'ip', data });
+        // 尝试多个 API
+        const apis = [
+          'https://ipapi.co/' + query.trim() + '/json/',
+          'https://ipwhois.app/json/' + query.trim(),
+          'http://ip-api.com/json/' + query.trim()
+        ];
+        let data = null;
+        for (const api of apis) {
+          try {
+            const res = await fetch(api);
+            data = await res.json();
+            if (data && !data.error && data.ip) break;
+            data = null;
+          } catch { continue; }
+        }
+        if (!data || data.error) {
+          throw new Error(data?.reason || data?.message || '所有查询 API 都无法访问');
+        }
+        // 统一字段映射
+        const normalized = {
+          ip: data.ip || query.trim(),
+          city: data.city || '',
+          region: data.region || data.regionName || '',
+          country_name: data.country_name || data.country || '',
+          org: data.org || data.asname || '',
+          asn: data.asn || '',
+          timezone: data.timezone || '',
+          longitude: data.longitude || '',
+          latitude: data.latitude || ''
+        };
+        setResult({ type: 'ip', data: normalized });
         toast({ title: '查询成功' });
       } else {
         setResult({ type: 'whois', data: { domain: query.trim(), info: '域名 Whois 查询需使用命令行工具 (whois/rdap)，受浏览器跨域限制无法直接查询。\n\n推荐使用:\n  - 终端: whois ' + query.trim() + '\n  - 在线: https://who.is/whois/' + query.trim() } });
@@ -209,7 +236,30 @@ function IpWhoisTool() {
     } catch (e) { toast({ title: '查询失败', description: e.message, variant: 'destructive' }); }
     finally { setLoading(false); }
   }, [query, mode, toast]);
-  const getMyIp = async () => { try { const res = await fetch('https://ipapi.co/json/'); const data = await res.json(); setQuery(data.ip || ''); } catch { toast({ title: '获取失败', variant: 'destructive' }); } };
+  const getMyIp = async () => {
+    try {
+      // 尝试多个 API
+      const apis = [
+        'https://api.ipify.org?format=json',
+        'https://api.ip.sb/jsonip',
+        'https://ip.seeip.org/jsonip'
+      ];
+      for (const api of apis) {
+        try {
+          const res = await fetch(api, { timeout: 5000 });
+          const data = await res.json();
+          if (data.ip) {
+            setQuery(data.ip);
+            toast({ title: '获取成功', description: data.ip });
+            return;
+          }
+        } catch { continue; }
+      }
+      toast({ title: '获取失败', description: '所有 IP API 都无法访问', variant: 'destructive' });
+    } catch {
+      toast({ title: '获取失败', variant: 'destructive' });
+    }
+  };
   return <div className="space-y-4">
       <div className="flex gap-3 items-center">
         <div className="flex bg-dev-panel border border-dev-border rounded-lg overflow-hidden">

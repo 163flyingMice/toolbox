@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vite';
+import { viteSingleFile } from 'vite-plugin-singlefile';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,12 +41,19 @@ function stockQuotesMiddleware() {
 }
 
 export default defineConfig({
+  base: './',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src')
     }
   },
-  plugins: [stockQuotesMiddleware()],
+  plugins: [stockQuotesMiddleware(), viteSingleFile()],
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
+    assetsInlineLimit: 10000000,
+    cssCodeSplit: false,
+  },
   server: {
     port: 5173
   },

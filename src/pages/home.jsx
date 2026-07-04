@@ -1,15 +1,23 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { Search, X, Pin, Sparkles } from 'lucide-react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { Search, X, Pin, Sparkles, Terminal, ChevronUp, ChevronDown } from 'lucide-react';
 import { ToolCard, NavHeader } from '@/components/ToolCard.jsx';
 import { TOOLS, CATEGORIES, searchTools, getToolsByCategory, getPinnedIds, savePinnedIds, getToolKey } from '@/components/ToolRegistry.jsx';
 
 export default function Home(props) {
   const navigateTo = props.$w.utils.navigateTo;
   const homeTraceContent = props.$w.utils.homeTraceContent || '';
+  const setMiniReader = props.$w.utils.setMiniReader;
   const [searchQuery, setSearchQuery] = useState('');
   const [pinnedIds, setPinnedIds] = useState(() => getPinnedIds());
   const [collapsedCategories, setCollapsedCategories] = useState({});
   const [traceIndex, setTraceIndex] = useState(0);
+  const [traceLines, setTraceLines] = useState(() => Number(localStorage.getItem('home_trace_lines')) || 5);
+  const [jumpLine, setJumpLine] = useState('');
+  const traceRef = useRef(null);
+
+  useEffect(() => {
+    try { localStorage.setItem('home_trace_lines', String(traceLines)); } catch {}
+  }, [traceLines]);
 
   const hasSearch = searchQuery.trim().length > 0;
   const normalizedSearch = searchQuery.trim().toLowerCase();
@@ -55,13 +63,48 @@ export default function Home(props) {
   const visibleToolCount = TOOLS.filter(t => t.category !== 'moyu').length;
   const visibleCategoryCount = CATEGORIES.filter(cat => cat.id !== 'moyu').length;
   const homeTraceLines = useMemo(() => homeTraceContent.split('\n').map(line => line.trim()).filter(Boolean), [homeTraceContent]);
-  const homeTraceLine = homeTraceLines[traceIndex] || homeTraceLines[0] || '';
+  const displayTraceLines = useMemo(() => {
+    const start = traceIndex;
+    return homeTraceLines.slice(start, start + traceLines);
+  }, [homeTraceLines, traceIndex, traceLines]);
 
   useEffect(() => { setTraceIndex(0); }, [homeTraceContent]);
 
-  const nextTraceLine = useCallback(() => {
-    setTraceIndex(index => homeTraceLines.length ? (index + 1) % homeTraceLines.length : 0);
+  const nextTracePage = useCallback(() => {
+    if (!homeTraceLines.length) return;
+    setTraceIndex(index => Math.min(homeTraceLines.length - 1, index + traceLines));
+  }, [homeTraceLines.length, traceLines]);
+
+  const prevTracePage = useCallback(() => {
+    setTraceIndex(index => Math.max(0, index - traceLines));
+  }, [traceLines]);
+
+  const jumpToTraceLine = useCallback(target => {
+    if (!homeTraceLines.length) return;
+    const lineNum = Number(target);
+    if (!Number.isFinite(lineNum) || lineNum < 1) return;
+    setTraceIndex(Math.max(0, Math.min(homeTraceLines.length - 1, lineNum - 1)));
+    setJumpLine('');
   }, [homeTraceLines.length]);
+
+  // 键盘快捷键翻页
+  useEffect(() => {
+    const onKeyDown = e => {
+      if (!homeTraceContent) return;
+      // 不拦截输入框的事件
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+
+      if (e.key === 'ArrowDown' || e.key === 'j') {
+        e.preventDefault();
+        nextTracePage();
+      } else if (e.key === 'ArrowUp' || e.key === 'k') {
+        e.preventDefault();
+        prevTracePage();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [homeTraceContent, nextTracePage, prevTracePage]);
 
   const openTraceSource = useCallback(() => {
     navigateTo({ pageId: 'moyutool', params: { tab: 'reader' } });
@@ -109,12 +152,34 @@ export default function Home(props) {
                 <X size={16} />
               </button>}
           </div>
-          {homeTraceLine && <button onClick={nextTraceLine} onDoubleClick={openTraceSource} title="trace" className="mt-3 flex max-w-2xl items-center gap-2 rounded-lg border border-dev-border/40 bg-dev-panel/50 px-3 py-2 text-left font-mono text-[11px] text-dev-muted/45 transition-colors hover:border-dev-border hover:text-dev-muted">
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-dev-green/30" />
-              <span className="shrink-0 text-dev-muted/35">trace</span>
-              <span className="min-w-0 flex-1 truncate">{homeTraceLine}</span>
-              <span className="hidden shrink-0 text-dev-muted/25 sm:inline">{homeTraceLines.length ? String(traceIndex + 1).padStart(2, '0') + '/' + String(homeTraceLines.length).padStart(2, '0') : '00/00'}</span>
-            </button>}
+          {displayTraceLines.length > 0 && <div className="mt-3 max-w-2xl" ref={traceRef}>
+              <div className="flex items-center gap-2 mb-1.5">
+                <Terminal size={12} className="text-dev-green/60" />
+                <span className="text-[10px] font-mono text-dev-muted/50 uppercase tracking-wider">build output</span>
+                <span className="text-[10px] font-mono text-dev-muted/30">[{new Date().toLocaleTimeString('en-US', {hour12: false})}]</span>
+                <div className="flex-1" />
+                <button onClick={prevTracePage} disabled={traceIndex <= 0} className="p-1 rounded border border-dev-border/40 text-dev-muted/40 hover:text-dev-muted disabled:opacity-30"><ChevronUp size={12} /></button>
+                <button onClick={nextTracePage} disabled={traceIndex + traceLines >= homeTraceLines.length} className="p-1 rounded border border-dev-border/40 text-dev-muted/40 hover:text-dev-muted disabled:opacity-30"><ChevronDown size={12} /></button>
+                <input type="number" min="1" max={homeTraceLines.length || 1} value={jumpLine} onChange={e => setJumpLine(e.target.value)} onKeyDown={e => {
+                  if (e.key === 'Enter') jumpToTraceLine(jumpLine);
+                }} placeholder="#" className="w-10 px-1 py-0.5 rounded border border-dev-border/40 bg-dev-input text-[10px] font-mono text-dev-muted text-center focus:border-dev-green/30" />
+                <button onClick={() => jumpToTraceLine(jumpLine)} disabled={!jumpLine} className="text-[10px] font-mono text-dev-muted/40 hover:text-dev-muted disabled:opacity-30">跳</button>
+                <input type="range" min="1" max="12" value={traceLines} onChange={e => setTraceLines(Number(e.target.value))} className="w-8 h-0.5 accent-dev-green/40" title="显示行数" />
+              </div>
+              <div onDoubleClick={openTraceSource} title="双击打开阅读器" className="rounded border border-[#21262d] bg-[#0d1117] px-3 py-2 font-mono text-[11px] leading-[1.4] overflow-hidden cursor-default hover:border-[#30363d] select-none">
+                {displayTraceLines.map((line, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <span className="shrink-0 text-[#30363d] select-none">{String(traceIndex + i + 1).padStart(3, '0')}</span>
+                    <span className="text-[#8b949e] min-w-0 flex-1">{line}</span>
+                  </div>
+                ))}
+                {displayTraceLines.length < traceLines && <div className="text-[#30363d] text-center py-1">··· EOF ···</div>}
+              </div>
+              <div className="flex items-center justify-between mt-1 px-1">
+                <span className="text-[10px] font-mono text-dev-muted/25">{homeTraceLines.length} lines</span>
+                <span className="text-[10px] font-mono text-dev-muted/25">{Math.min(traceIndex + traceLines, homeTraceLines.length)}/{homeTraceLines.length}</span>
+              </div>
+            </div>}
           {hasSearch && <p className="text-xs font-mono text-dev-muted mt-2 ml-1">
               找到 {filteredTools.length} 个匹配工具
             </p>}

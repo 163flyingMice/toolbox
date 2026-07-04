@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { BookOpen, EyeOff, Settings, Bookmark, ChevronUp, ChevronDown, Play, Pause, X, Upload, AlignJustify, Type, MoveVertical, Eye, Minimize2, Maximize2, Plus, Trash2, ListTree } from 'lucide-react';
+import { BookOpen, EyeOff, Settings, Bookmark, ChevronUp, ChevronDown, Play, Pause, X, Upload, AlignJustify, Type, MoveVertical, Eye, Minimize2, Maximize2, Plus, Trash2, ListTree, Shield, Ghost, FileText, Table2 } from 'lucide-react';
 import { useToast } from '@/components/ui';
 import { ToolHeader, NavHeader, ActionButton } from '@/components/ToolCard.jsx';
 
@@ -467,6 +467,8 @@ function NovelReader({
   const [chunkSize, setChunkSize] = useState(0);
   const [lineMode, setLineMode] = useState(() => localStorage.getItem('moyu_lineMode') === '1');
   const [lineIndex, setLineIndex] = useState(0);
+  const [multiLineCount, setMultiLineCount] = useState(() => Number(localStorage.getItem('moyu_multiLine')) || 3);
+  const [jumpLineValue, setJumpLineValue] = useState('');
   const [scrollProgress, setScrollProgress] = useState(0);
   const [bookmarks, setBookmarks] = useState([]);
   const [chapters, setChapters] = useState([]);
@@ -489,6 +491,12 @@ function NovelReader({
   });
   const [bgMode, setBgMode] = useState(() => localStorage.getItem('moyu_bgMode') || 'eye'); // eye | night | green | white
   const [stealthMode, setStealthMode] = useState(() => localStorage.getItem('moyu_reader_plain') !== '0');
+  const [emergencyHide, setEmergencyHide] = useState(false);
+  const [disguiseMode, setDisguiseMode] = useState(() => localStorage.getItem('moyu_disguise') || 'log'); // log | table | word
+  const [miniFloatMode, setMiniFloatMode] = useState(false);
+  const [miniOpacity, setMiniOpacity] = useState(() => Number(localStorage.getItem('moyu_mini_opacity')) || 0.85);
+  const [miniPosition, setMiniPosition] = useState({ x: 20, y: 20 });
+  const miniDragRef = useRef(null);
 
   const [autoScroll, setAutoScroll] = useState(false);
   const [scrollSpeed, setScrollSpeed] = useState(1);
@@ -556,9 +564,16 @@ function NovelReader({
     } catch {}
   }, [stealthMode]);
   useEffect(() => {
+    try {
+      localStorage.setItem('moyu_disguise', disguiseMode);
+    } catch {}
+  }, [disguiseMode]);
+  useEffect(() => {
     if (activeBookId) {
       try {
         localStorage.setItem('moyu_lastBook', activeBookId);
+        const book = books.find(b => b.id === activeBookId);
+        if (book) localStorage.setItem('moyu_lastBookName', book.name);
       } catch {}
     }
   }, [activeBookId]);
@@ -677,6 +692,7 @@ function NovelReader({
       try {
         const normalized = total ? start / total : 0;
         localStorage.setItem('moyu_lastBook', book.id);
+        localStorage.setItem('moyu_lastBookName', book.name);
         localStorage.setItem('moyu_prog_' + book.id, String(Math.min(1, Math.max(0, normalized))));
         localStorage.setItem('moyu_offset_' + book.id, String(start));
         localStorage.setItem('moyu_scroll_' + book.id, String(Number.isFinite(options.scrollTop) ? options.scrollTop : 0));
@@ -789,8 +805,38 @@ function NovelReader({
     let cancelled = false;
     const restoreLastBook = async () => {
       const last = localStorage.getItem('moyu_lastBook');
-      const book = books.find(b => b.id === last) || books.filter(b => isPersistentNovelStorage(b.storage) || typeof b.content === 'string').sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0))[0];
-      if (!book) return;
+      if (!last) return;
+
+      // 尝试从持久化存储中找到书籍
+      const book = books.find(b => b.id === last);
+      if (!book) {
+        // 书籍不在列表中，尝试从缓存恢复
+        const cachedFile = await getNovelStoredFile(last, 'cached.txt').catch(() => null);
+        if (cachedFile) {
+          // 从缓存创建临时书籍
+          const tempBook = {
+            id: last,
+            name: localStorage.getItem('moyu_lastBookName') || '缓存文件',
+            addedAt: Date.now(),
+            chars: 0,
+            size: cachedFile.size,
+            storage: 'indexed-file'
+          };
+          sessionBookFilesRef.current.set(last, cachedFile);
+          const nextBooks = [...books, tempBook];
+          setBooks(nextBooks);
+          await selectBook(tempBook, { silent: true });
+          return;
+        }
+
+        // 无法恢复，显示提示但不报错
+        toast({
+          title: '请重新选择小说',
+          description: '上次阅读的小说未能自动恢复',
+        });
+        return;
+      }
+
       let canRestore = true;
       if (book.storage === 'file-handle') {
         const handle = await getNovelFileHandle(book.id).catch(() => null);
@@ -814,20 +860,26 @@ function NovelReader({
             canRestore = false;
           }
         }
+      } else if (book.storage === 'opfs-file' || book.storage === 'indexed-file') {
+        const cachedFile = await getNovelStoredFile(book.id, book.name + '.txt').catch(() => null);
+        if (cachedFile) {
+          sessionBookFilesRef.current.set(book.id, cachedFile);
+        } else {
+          canRestore = false;
+        }
       }
+
       if (cancelled) return;
       if (!canRestore) {
         toast({
-          title: '需要重新授权文件',
-          description: '浏览器没有保留这本书的本地副本，请重新打开一次原文件',
-          variant: 'destructive'
+          title: '需要重新选择小说',
+          description: '浏览器未能恢复上次阅读的文件',
         });
         return;
       }
+
       if (isPersistentNovelStorage(book.storage) || typeof book.content === 'string') {
-        selectBook(book, {
-          silent: false
-        });
+        selectBook(book, { silent: true });
       }
     };
     restoreLastBook().catch(() => {});
@@ -1219,6 +1271,44 @@ function NovelReader({
     });
   }, [activeBook, activeBookTotalSize, chunkOffset, chunkSize, loadBookChunk, loadingBookId, saveReadingPosition]);
 
+  const jumpToLine = useCallback(async targetLine => {
+    if (!activeBook || loadingBookId) return;
+    const target = Math.max(0, Math.min(contentLines.length - 1, Number(targetLine) - 1));
+    if (!Number.isFinite(target)) return;
+    setLineIndex(target);
+    if (activeBookId) {
+      try {
+        localStorage.setItem('moyu_line_' + activeBookId, String(target));
+      } catch {}
+    }
+    requestAnimationFrame(() => saveReadingPosition(contentRef.current));
+    setJumpLineValue('');
+  }, [activeBook, activeBookId, contentLines.length, loadingBookId, saveReadingPosition]);
+
+  const readNextMultiLine = useCallback(async () => {
+    if (!activeBook || loadingBookId) return;
+    const nextIndex = Math.min(contentLines.length - 1, lineIndex + multiLineCount);
+    setLineIndex(nextIndex);
+    if (activeBookId) {
+      try {
+        localStorage.setItem('moyu_line_' + activeBookId, String(nextIndex));
+      } catch {}
+    }
+    requestAnimationFrame(() => saveReadingPosition(contentRef.current));
+  }, [activeBook, activeBookId, contentLines.length, lineIndex, loadingBookId, multiLineCount, saveReadingPosition]);
+
+  const readPrevMultiLine = useCallback(async () => {
+    if (!activeBook || loadingBookId) return;
+    const nextIndex = Math.max(0, lineIndex - multiLineCount);
+    setLineIndex(nextIndex);
+    if (activeBookId) {
+      try {
+        localStorage.setItem('moyu_line_' + activeBookId, String(nextIndex));
+      } catch {}
+    }
+    requestAnimationFrame(() => saveReadingPosition(contentRef.current));
+  }, [activeBook, activeBookId, lineIndex, loadingBookId, multiLineCount, saveReadingPosition]);
+
   const jumpToChapter = useCallback(async chapter => {
     if (!activeBook || !chapter) return;
     const ok = await loadBookChunk(activeBook, chapter.offset, {
@@ -1257,29 +1347,68 @@ function NovelReader({
 
   useEffect(() => {
     const onKeyDown = event => {
+      // 紧急隐藏快捷键：ESC 或 Cmd/Ctrl+Shift+H
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setEmergencyHide(prev => !prev);
+        return;
+      }
+      // Mac: Cmd+Shift+H, Windows: Ctrl+Shift+H
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'h') {
+        event.preventDefault();
+        setEmergencyHide(prev => !prev);
+        return;
+      }
+
       if (!activeBook || loadingBookId || isEditableTarget(event.target)) return;
-      if (event.altKey || event.metaKey || event.ctrlKey) return;
+      // 不拦截系统快捷键（Cmd/Ctrl 组合键）
+      if (event.metaKey || event.ctrlKey) return;
       const key = event.key;
-      if (['ArrowRight', 'ArrowDown', ' ', 'PageDown', 'j', 'J'].includes(key)) {
-        event.preventDefault();
-        lineMode ? readNextLine() : readNextPage();
-      } else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'k', 'K'].includes(key)) {
-        event.preventDefault();
-        lineMode ? readPrevLine() : readPrevPage();
-      } else if (key === ']') {
-        event.preventDefault();
-        jumpRelativeChapter(1);
-      } else if (key === '[') {
-        event.preventDefault();
-        jumpRelativeChapter(-1);
-      } else if (key === 't' || key === 'T') {
-        event.preventDefault();
-        setShowChapters(value => !value);
+      if (lineMode) {
+        if (key === ' ' || key === 'PageDown') {
+          event.preventDefault();
+          readNextMultiLine();
+        } else if (key === 'PageUp') {
+          event.preventDefault();
+          readPrevMultiLine();
+        } else if (key === 'ArrowDown' || key === 'j' || key === 'J') {
+          event.preventDefault();
+          readNextLine();
+        } else if (key === 'ArrowUp' || key === 'k' || key === 'K') {
+          event.preventDefault();
+          readPrevLine();
+        } else if (key === 'ArrowRight') {
+          event.preventDefault();
+          jumpRelativeChapter(1);
+        } else if (key === 'ArrowLeft') {
+          event.preventDefault();
+          jumpRelativeChapter(-1);
+        } else if (key === 't' || key === 'T') {
+          event.preventDefault();
+          setShowChapters(value => !value);
+        }
+      } else {
+        if (['ArrowRight', 'ArrowDown', ' ', 'PageDown', 'j', 'J'].includes(key)) {
+          event.preventDefault();
+          readNextPage();
+        } else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'k', 'K'].includes(key)) {
+          event.preventDefault();
+          readPrevPage();
+        } else if (key === ']') {
+          event.preventDefault();
+          jumpRelativeChapter(1);
+        } else if (key === '[') {
+          event.preventDefault();
+          jumpRelativeChapter(-1);
+        } else if (key === 't' || key === 'T') {
+          event.preventDefault();
+          setShowChapters(value => !value);
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeBook, jumpRelativeChapter, lineMode, loadingBookId, readNextLine, readNextPage, readPrevLine, readPrevPage]);
+  }, [activeBook, jumpRelativeChapter, lineMode, loadingBookId, readNextLine, readNextPage, readPrevLine, readPrevPage, readNextMultiLine, readPrevMultiLine]);
 
   const handleHide = useCallback(() => {
     const miniContent = createMiniReaderContent(lineMode ? contentLines.slice(lineIndex, lineIndex + 8).join('\n') : content);
@@ -1351,10 +1480,16 @@ function NovelReader({
           {stealthMode ? <Eye size={14} className="mr-1" /> : <EyeOff size={14} className="mr-1" />}
           {stealthMode ? '标准' : '日志'}
         </ActionButton>
+        <ActionButton onClick={() => setMiniFloatMode(s => !s)} variant={miniFloatMode ? 'primary' : 'secondary'}>
+          <Ghost size={14} className="mr-1" />迷你
+        </ActionButton>
+        <ActionButton onClick={() => setEmergencyHide(s => !s)} variant={emergencyHide ? 'danger' : 'secondary'}>
+          <Shield size={14} className="mr-1" />{emergencyHide ? '恢复' : '应急'}
+        </ActionButton>
         <ActionButton onClick={handleHide} variant="danger">
           <Minimize2 size={14} className="mr-1" />收起
         </ActionButton>
-        {activeBook && <span className="text-[10px] font-mono text-dev-muted/35">←/→ 翻页 · [/ ] 章节 · T 目录</span>}
+        {activeBook && <span className="text-[10px] font-mono text-dev-muted/35">ESC应急 · {lineMode ? '↑↓ 单行 · 空格 多行 · ←→ 章节' : '←/→ 翻页 · [/] 章节'} · T 目录</span>}
       </div>
 
       
@@ -1369,10 +1504,14 @@ function NovelReader({
             <button onClick={readPrevChunk} disabled={!hasPrevChunk || !!loadingBookId} className="px-2 py-1 rounded border border-dev-border text-[10px] font-mono text-dev-muted hover:text-dev-text disabled:opacity-30 disabled:cursor-default">上一段</button>
             <button onClick={readNextChunk} disabled={!hasNextChunk || !!loadingBookId} className="px-2 py-1 rounded border border-dev-border text-[10px] font-mono text-dev-muted hover:text-dev-text disabled:opacity-30 disabled:cursor-default">{loadingBookId === activeBook.id ? '读取中' : '下一段'}</button>
           </div>
-          {lineMode && <div className="flex items-center gap-1">
-              <button onClick={readPrevLine} disabled={(!hasPrevChunk && lineIndex <= 0) || !!loadingBookId} className="px-2 py-1 rounded border border-dev-border text-[10px] font-mono text-dev-muted hover:text-dev-text disabled:opacity-30 disabled:cursor-default">上一行</button>
-              <button onClick={readNextLine} disabled={(!hasNextChunk && lineIndex >= contentLines.length - 1) || !!loadingBookId} className="px-2 py-1 rounded border border-dev-border text-[10px] font-mono text-dev-muted hover:text-dev-text disabled:opacity-30 disabled:cursor-default">{loadingBookId === activeBook.id ? '读取中' : '下一行'}</button>
+          {lineMode && <div className="flex items-center gap-1 flex-wrap">
+              <button onClick={readPrevLine} disabled={(!hasPrevChunk && lineIndex <= 0) || !!loadingBookId} className="px-2 py-1 rounded border border-dev-border text-[10px] font-mono text-dev-muted hover:text-dev-text disabled:opacity-30 disabled:cursor-default">↑1行</button>
+              <button onClick={readPrevMultiLine} disabled={(!hasPrevChunk && lineIndex <= 0) || !!loadingBookId} className="px-2 py-1 rounded border border-dev-border text-[10px] font-mono text-dev-muted hover:text-dev-text disabled:opacity-30 disabled:cursor-default">↑{multiLineCount}行</button>
+              <button onClick={readNextMultiLine} disabled={(!hasNextChunk && lineIndex >= contentLines.length - 1) || !!loadingBookId} className="px-2 py-1 rounded border border-dev-border text-[10px] font-mono text-dev-muted hover:text-dev-text disabled:opacity-30 disabled:cursor-default">{loadingBookId === activeBook.id ? '...' : `↓${multiLineCount}行`}</button>
+              <button onClick={readNextLine} disabled={(!hasNextChunk && lineIndex >= contentLines.length - 1) || !!loadingBookId} className="px-2 py-1 rounded border border-dev-border text-[10px] font-mono text-dev-muted hover:text-dev-text disabled:opacity-30 disabled:cursor-default">↓1行</button>
               <span className="text-[10px] font-mono text-dev-muted/50">{Math.min(lineIndex + 1, contentLines.length)} / {contentLines.length || 1}</span>
+              <input type="number" min="1" max={contentLines.length || 1} value={jumpLineValue} onChange={e => setJumpLineValue(e.target.value)} onKeyDown={e => e.key === 'Enter' && jumpToLine(jumpLineValue)} placeholder="跳转" className="w-12 px-1 py-0.5 rounded border border-dev-border bg-dev-input text-[10px] font-mono text-dev-text text-center focus:border-dev-green/50" />
+              <button onClick={() => jumpToLine(jumpLineValue)} disabled={!jumpLineValue || !!loadingBookId} className="px-2 py-1 rounded border border-dev-border text-[10px] font-mono text-dev-muted hover:text-dev-text disabled:opacity-30">跳</button>
             </div>}
           {autoScroll && <div className="flex items-center gap-1">
               <span className="text-[10px] font-mono text-dev-muted">速度</span>
@@ -1403,6 +1542,16 @@ function NovelReader({
               <input type="range" min="1.2" max="2.8" step="0.1" value={lineHeight} onChange={e => setLineHeight(parseFloat(e.target.value))} className="w-20 h-1 accent-dev-green" />
               <span className="text-xs font-mono text-dev-text w-8">{lineHeight.toFixed(1)}</span>
             </div>
+            <div className="flex items-center gap-2">
+              <AlignJustify size={14} className="text-dev-muted" />
+              <span className="text-xs font-mono text-dev-muted">多行</span>
+              <input type="range" min="1" max="10" value={multiLineCount} onChange={e => {
+                const val = parseInt(e.target.value);
+                setMultiLineCount(val);
+                try { localStorage.setItem('moyu_multiLine', String(val)); } catch {}
+              }} className="w-20 h-1 accent-dev-green" />
+              <span className="text-xs font-mono text-dev-text w-6">{multiLineCount}行</span>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <AlignJustify size={14} className="text-dev-muted" />
@@ -1426,6 +1575,28 @@ function NovelReader({
         }].map(bg => <button key={bg.key} onClick={() => setBgMode(bg.key)} className={`w-6 h-6 rounded border-2 transition-all ${bgMode === bg.key ? 'border-dev-green scale-110' : 'border-dev-border'}`} style={{
           backgroundColor: bg.color
         }} title={bg.label} />)}
+          </div>
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Shield size={14} className="text-dev-muted" />
+              <span className="text-xs font-mono text-dev-muted">伪装</span>
+              {[{ key: 'log', label: '日志', icon: FileText }, { key: 'table', label: '表格', icon: Table2 }, { key: 'word', label: '文档', icon: FileText }].map(d => {
+                const Icon = d.icon;
+                return <button key={d.key} onClick={() => { setDisguiseMode(d.key); try { localStorage.setItem('moyu_disguise', d.key); } catch {} }} className={`px-2 py-1 rounded border text-xs font-mono flex items-center gap-1 ${disguiseMode === d.key ? 'border-dev-green text-dev-green bg-dev-green/10' : 'border-dev-border text-dev-muted hover:text-dev-text'}`}>
+                  <Icon size={12} />{d.label}
+                </button>;
+              })}
+            </div>
+            <div className="flex items-center gap-2">
+              <Ghost size={14} className="text-dev-muted" />
+              <span className="text-xs font-mono text-dev-muted">透明</span>
+              <input type="range" min="0.1" max="1" step="0.05" value={miniOpacity} onChange={e => {
+                const val = parseFloat(e.target.value);
+                setMiniOpacity(val);
+                try { localStorage.setItem('moyu_mini_opacity', String(val)); } catch {}
+              }} className="w-20 h-1 accent-dev-green" />
+              <span className="text-xs font-mono text-dev-text w-8">{Math.round(miniOpacity * 100)}%</span>
+            </div>
           </div>
         </div>}
 
@@ -1476,16 +1647,77 @@ function NovelReader({
         </div>}
 
       
-      <div ref={contentRef} onScroll={handleScroll} className={`flex-1 min-h-0 overflow-y-auto rounded-lg p-6 border transition-colors ${stealthMode ? stealthBg + ' border-[#21262d]' : bgStyles[bgMode] + ' border-dev-border'}`} style={{
-      fontSize,
-      lineHeight
+      <div ref={contentRef} onScroll={handleScroll} onDoubleClick={() => setEmergencyHide(s => !s)} className={`flex-1 min-h-0 overflow-y-auto rounded-lg p-6 border transition-all ${miniFloatMode ? 'scale-[0.3] origin-bottom-right fixed bottom-4 right-4 w-[300px] h-[200px] z-50' : ''} ${emergencyHide ? '' : stealthMode ? stealthBg + ' border-[#21262d]' : bgStyles[bgMode] + ' border-dev-border'}`} style={{
+      fontSize: miniFloatMode ? 12 : fontSize,
+      lineHeight: miniFloatMode ? 1.4 : lineHeight,
+      opacity: miniFloatMode ? miniOpacity : 1,
+      pointerEvents: miniFloatMode ? 'auto' : 'auto'
     }}>
-        {content ? <div className="whitespace-pre-wrap break-words">
-            {lineMode ? <div className="min-h-full flex items-center" onClick={readNextLine}>
-                <p className={stealthMode ? 'font-mono text-[13px] leading-7 text-[#484f58]' : ''}>
-                  {stealthMode && <span className="text-[#30363d] mr-2 select-none">{String(lineIndex + 1).padStart(4, '0')}</span>}
-                  {stealthMode ? '// ' : ''}{currentLine || '...'}
-                </p>
+        {emergencyHide ? (
+          // 紧急隐藏界面 - 伪装模板
+          disguiseMode === 'log' ? (
+            <div className="min-h-full bg-[#0d1117] text-[#8b949e] font-mono text-[13px] p-4">
+              <div className="text-[#58a6ff] mb-2">$ npm run build</div>
+              <div className="text-[#7ee787]">✓ Compiled successfully!</div>
+              <div className="text-[#8b949e] mt-2">asset bundle.js 142.35 KiB [compared for emit]</div>
+              <div className="text-[#8b949e]">asset style.css 8.27 KiB [compared for emit]</div>
+              <div className="text-[#8b949e]">webpack 5.89.0 compiled successfully in 2847 ms</div>
+              <div className="text-[#30363d] mt-4">[HMR] Waiting for update signal from WDS...</div>
+            </div>
+          ) : disguiseMode === 'table' ? (
+            <div className="min-h-full bg-white text-[#333] p-2">
+              <table className="w-full border-collapse text-xs">
+                <thead><tr className="bg-[#f5f5f5]">
+                  <th className="border border-[#ddd] p-2 font-normal">项目</th>
+                  <th className="border border-[#ddd] p-2 font-normal">状态</th>
+                  <th className="border border-[#ddd] p-2 font-normal">进度</th>
+                  <th className="border border-[#ddd] p-2 font-normal">负责人</th>
+                </tr></thead>
+                <tbody>
+                  {['需求分析', '设计阶段', '开发阶段', '测试阶段', '部署上线'].map((item, i) => (
+                    <tr key={i}>
+                      <td className="border border-[#ddd] p-2">{item}</td>
+                      <td className="border border-[#ddd] p-2 text-[#52c41a]">{i < 2 ? '已完成' : i < 4 ? '进行中' : '待开始'}</td>
+                      <td className="border border-[#ddd] p-2">{i < 2 ? '100%' : i < 4 ? '60%' : '0%'}</td>
+                      <td className="border border-[#ddd] p-2">张{['伟', '明', '华', '强', '军'][i]}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="min-h-full bg-white text-[#333] p-6" style={{ fontFamily: 'SimSun, serif' }}>
+              <div className="text-center text-lg font-bold mb-4">工作日报</div>
+              <div className="text-sm mb-2">日期：{new Date().toLocaleDateString('zh-CN')}</div>
+              <div className="text-sm mb-4">姓名：张三</div>
+              <div className="text-sm leading-relaxed">
+                <p className="mb-2">一、今日工作内容：</p>
+                <p className="mb-2 indent-8">1. 完成模块功能开发及单元测试；</p>
+                <p className="mb-2 indent-8">2. 参与需求评审会议，讨论下阶段开发计划；</p>
+                <p className="mb-2 indent-8">3. 协助解决线上问题，优化系统性能。</p>
+                <p className="mb-2">二、明日工作计划：</p>
+                <p className="mb-2 indent-8">1. 继续推进核心模块开发；</p>
+                <p className="mb-2 indent-8">2. 编写技术文档，整理设计思路。</p>
+              </div>
+            </div>
+          )
+        ) : miniFloatMode ? (
+          // 迷你悬浮模式
+          <div className="min-h-full flex items-center justify-center">
+            <div className="text-center">
+              {contentLines.slice(lineIndex, lineIndex + 2).map((line, i) => (
+                <p key={i} className="text-sm font-mono text-dev-muted/70 mb-1 truncate max-w-[200px]">{line}</p>
+              ))}
+            </div>
+          </div>
+        ) : content ? <div className="whitespace-pre-wrap break-words">
+            {lineMode ? <div className="min-h-full flex flex-col" onClick={readNextMultiLine}>
+                {contentLines.slice(lineIndex, lineIndex + multiLineCount).map((line, i) => (
+                  <p key={i} className={`${stealthMode ? 'font-mono text-[13px] leading-7 text-[#484f58]' : ''} ${i === 0 ? '' : 'mt-1'}`}>
+                    {stealthMode && <span className="text-[#30363d] mr-2 select-none">{String(lineIndex + i + 1).padStart(4, '0')}</span>}
+                    {stealthMode ? '// ' : ''}{line || '...'}
+                  </p>
+                ))}
               </div> : stealthMode ? content.split('\n').map((line, i) => line.trim() ? <p key={i} className="font-mono text-[13px] leading-6 mb-1">
                     <span className="text-[#30363d] mr-2 select-none">{String(i + 1).padStart(4, '0')}</span>
                     <span className="text-[#484f58]">// {line}</span>
